@@ -1,4 +1,71 @@
-# Efficient Docker Registry with Block-Level Deduplication
+# Efficient Docker Registry with Block-Level Deduplication 
+
+This folder is for DEMO purpose only because: 
+* This structure gives you both:
+    * Storage efficiency through block-level deduplication
+    * Docker compatibility via standard layer storage
+
+1. blocks/ (The Core of Deduplication)
+* What it stores: Unique 4KB chunks of layer data
+* Purpose:
+    * Stores the smallest units of data (chunks) with SHA-1 hashes as filenames
+    * Identical chunks across different layers are stored only once
+    * Enables true block-level deduplication
+* Example:
+```shell
+data/blocks/
+├── baeb324d423120c51f2273b3d5fae2066f9f0d96  # Chunk 1
+├── c3f9d5a1f9b4f9c5f8e6d7c8b9a0f1e2d3c4b5a6  # Chunk 2
+└── ... (16,159+ files)
+```
+
+2. layers/ (Docker Layer Storage)
+    * Structure:
+```shell
+data/layers/<sha256-digest>/
+├── data        # Complete layer content (for Docker compatibility)
+└── recipe.json # List of chunk hashes that make up this layer
+```
+    * Purpose:
+        * Maps Docker layer digests to their constituent chunks
+        * Allows reconstruction of layers from deduplicated blocks
+        * Maintains Docker compatibility via the data file
+
+3. manifests/ (Image Metadata)
+    * Structure:
+```bash
+data/manifests/<image-name>/
+├── latest                # Tag reference
+└── sha256:<manifest-digest> # Canonical manifest
+```
+    * Purpose:
+        * Stores image manifests (lists of layers + config)
+        * Enables tag-to-digest resolution
+        * Preserves image metadata and layer ordering
+
+4. `uploads/` (Temporary Storage)
+    * Purpose:
+        * Holds blobs during active uploads
+        * Atomic write operations prevent corruption
+        * Automatically cleaned up after successful push
+
+## How they work together
+#### During Push
+```shell
+  A[Docker Layer] --> B[Split into 4KB chunks]
+  B --> C[Store unique chunks in blocks/]
+  C --> D[Create layer mapping in layers/]
+  D --> E[Store manifest in manifests/]
+```
+#### During Pull 
+```shell 
+graph RL
+  A[manifests/] --> B[Lists layers]
+  B --> C[layers/recipe.json]
+  C --> D[blocks/ chunks]
+  D --> E[Reconstructed Layer]
+```
+
 
 ## Project Description:
 This project implements a custom Docker registry that optimizes storage efficiency through block-level deduplication. Unlike traditional registries (which store redundant layers in full), this system:
@@ -136,42 +203,42 @@ docker-dedup-registry/
 
 #### Pushing `localhost:5001/nginx-v1` image
 ```bash 
-[root@hssl docker-dedup-registry]# docker tag nginx-v1 localhost:5001/nginx-v1 
-[root@hssl docker-dedup-registry]# docker push localhost:5001/nginx-v1 
+[root@hssl layer-and-block]# docker tag nginx-v1 localhost:5001/nginx-v1 
+[root@hssl layer-and-block]# docker push localhost:5001/nginx-v1 
 Using default tag: latest
 The push refers to repository [localhost:5001/nginx-v1]
 09be7864001e: Pushed 
 375990b2a90a: Pushed 
 latest: digest: sha256:1a4aa86d6b9a184dc0a7b622b22b57f840646735d345e156fd713f82b082f695 size: 741
-[root@hssl docker-dedup-registry]# docker inspect localhost:5001/nginx-v1 | jq '.[0].RootFS.Layers'
+[root@hssl layer-and-block]# docker inspect localhost:5001/nginx-v1 | jq '.[0].RootFS.Layers'
 [
   "sha256:375990b2a90a8d8f332d9b9422d948f7068a3313bf5a1c9fbb91ff2d29046130",
   "sha256:09be7864001ec2508c55fd220c34389e83541c6945b6bf802582a698bd5ed9ff"
 ]
-[root@hssl docker-dedup-registry]# find data/blocks/ -type f | wc -l
+[root@hssl layer-and-block]# find data/blocks/ -type f | wc -l
 16159
 
-[root@hssl docker-dedup-registry]# du -sh data/blocks/
+[root@hssl layer-and-block]# du -sh data/blocks/
 65M	data/blocks/
 ```
 
 #### Pushing `localhost:5001/nginx-v2` image
 ```bash
-[root@hssl docker-dedup-registry]# docker tag nginx-v2 localhost:5001/nginx-v2 
-[root@hssl docker-dedup-registry]# docker push localhost:5001/nginx-v2
+[root@hssl layer-and-block]# docker tag nginx-v2 localhost:5001/nginx-v2 
+[root@hssl layer-and-block]# docker push localhost:5001/nginx-v2
 Using default tag: latest
 The push refers to repository [localhost:5001/nginx-v2]
 5eec801e71a8: Pushed 
 375990b2a90a: Layer already exists 
 latest: digest: sha256:1772efe5fde950babb153ecc19df03b98e78c714663c3735abf68707d27b26b8 size: 741
-[root@hssl docker-dedup-registry]#  docker inspect localhost:5001/nginx-v2 | jq '.[0].RootFS.Layers'
+[root@hssl layer-and-block]#  docker inspect localhost:5001/nginx-v2 | jq '.[0].RootFS.Layers'
 [
   "sha256:375990b2a90a8d8f332d9b9422d948f7068a3313bf5a1c9fbb91ff2d29046130",
   "sha256:5eec801e71a83c325c8af50b537f8c4e5d0daa02b6b74a8b97a65c3011f058b9"
 ]
-[root@hssl docker-dedup-registry]# find data/blocks/ -type f | wc -l
+[root@hssl layer-and-block]# find data/blocks/ -type f | wc -l
 25002
-[root@hssl docker-dedup-registry]# du -sh data/blocks/
+[root@hssl layer-and-block]# du -sh data/blocks/
 100M	data/blocks/
 ```
 
@@ -190,3 +257,15 @@ localhost:5001/nginx-v2:latest
 REPOSITORY                TAG       IMAGE ID       CREATED         SIZE
 localhost:5001/nginx-v2   latest    604dd1dcf147   12 hours ago    157MB
 ```
+
+### Key Deduplication Scenarios
+* **Same Layer in Different Images:**
+    * Both images reference the same chunks in blocks/
+    * Only one physical copy exists on disk
+* **Similar Layers:**
+    * Common chunks are reused
+    * Only new chunks are added to blocks/
+* **Example from Your Push:**
+    * `nginx-v1` and `nginx-v2` shared 375990b2a90a layer
+* **Result:** 
+    * No new blocks were added for this layer during v2 push

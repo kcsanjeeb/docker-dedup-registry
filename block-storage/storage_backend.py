@@ -1,7 +1,3 @@
-# Double Storage: This file just for DEMO purposes ( Stores Layers + Blocks )
-# Complete layers in layers/<digest>/data (traditional Docker format)
-# Deduplicated chunks in blocks/
-
 import os
 import json
 import hashlib
@@ -75,33 +71,36 @@ class DedupStorage:
         return chunk_hash
 
     def store_layer(self, upload_path, digest):
-        """Handle both small config layers and large filesystem layers"""
+        # Read content once
         with open(upload_path, 'rb') as f:
             content = f.read()
         
-        # Verify digest first
-        computed_digest = 'sha256:' + hashlib.sha256(content).hexdigest()
-        if computed_digest != digest:
-            raise ValueError(f"Digest mismatch: {computed_digest} != {digest}")
+        # Verify digest
+        computed = 'sha256:' + hashlib.sha256(content).hexdigest()
+        if computed != digest:
+            raise ValueError(f"Digest mismatch: {computed} != {digest}")
 
         layer_dir = self.layers_dir / digest.replace('sha256:', '')
         if layer_dir.exists():
-            return digest
+            return digest  # Already exists
 
         layer_dir.mkdir(parents=True, exist_ok=True)
         
-        # Only chunk if larger than 8KB (2 chunks)
-        if len(content) > 8192:
-            recipe = {"chunks": []}
-            for chunk in self._chunk_file(upload_path):
-                chunk_hash = self.store_block(chunk)
-                recipe["chunks"].append(chunk_hash)
-            (layer_dir / "recipe.json").write_text(json.dumps(recipe))
+        # ONLY store chunks (no full layer copy)
+        recipe = {"chunks": []}
+        for i in range(0, len(content), 4096):  # 4KB chunks
+            chunk = content[i:i+4096]
+            chunk_hash = self._hash_block(chunk)
+            recipe["chunks"].append(chunk_hash)
+            
+            if chunk_hash not in self.index:
+                (self.blocks_dir / chunk_hash).write_bytes(chunk)
+                self.index[chunk_hash] = True
         
-        # Always store full content
-        (layer_dir / "data").write_bytes(content)
+        # Store just the recipe
+        (layer_dir / "recipe.json").write_text(json.dumps(recipe))
         
-        return digest
+        return digest  # No full "data" file written
     
     def layer_exists(self, digest):
         """Check if layer exists (by digest)"""

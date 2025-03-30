@@ -215,77 +215,102 @@ def get_manifest(name, reference):
         }
     )
     
-@app.route('/v2/<name>/blobs/<digest>', methods=['GET', 'HEAD'])
-def handle_blob(name, digest):
+@app.route('/v2/<name>/blobs/<digest>', methods=['GET'])
+def get_blob(name, digest):
+    """Reconstruct and serve blobs from deduplicated chunks"""
     if not digest.startswith('sha256:'):
         return jsonify({
-            'errors': [{
-                'code': 'DIGEST_INVALID',
-                'message': 'Invalid digest format'
-            }]
+            'errors': [{'code': 'DIGEST_INVALID', 'message': 'Invalid digest format'}]
         }), 400
 
-    # Try to find the blob
-    blob_path = storage.layers_dir / digest.replace('sha256:', '') / "data"
-    if blob_path.exists():
-        if request.method == 'HEAD':
-            return Response(headers={
-                'Docker-Content-Digest': digest,
-                'Content-Length': str(blob_path.stat().st_size)
-            })
+    # Check if it's a config blob (small, stored whole)
+    config_path = storage.layers_dir / digest.replace('sha256:', '') / "config"
+    if config_path.exists():
         return send_file(
-            blob_path,
+            config_path,
             mimetype='application/octet-stream',
-            headers={
-                'Docker-Content-Digest': digest
-            }
+            headers={'Docker-Content-Digest': digest}
         )
-    
-    # Try to reconstruct from deduplicated chunks
+
+    # Handle layer blobs (reconstruct from chunks)
     recipe_path = storage.layers_dir / digest.replace('sha256:', '') / "recipe.json"
-    if recipe_path.exists():
-        try:
-            with open(recipe_path) as f:
-                recipe = json.load(f)
-            
-            if request.method == 'HEAD':
-                # Calculate size from chunks
-                total_size = sum(
-                    (storage.blocks_dir / h).stat().st_size
-                    for h in recipe['chunks']
-                )
-                return Response(headers={
-                    'Docker-Content-Digest': digest,
-                    'Content-Length': str(total_size)
-                })
-            
-            # Reconstruct for GET
-            def generate():
-                for chunk_hash in recipe['chunks']:
-                    with open(storage.blocks_dir / chunk_hash, 'rb') as f:
-                        yield f.read()
-            
-            return Response(
-                generate(),
-                mimetype='application/octet-stream',
-                headers={
-                    'Docker-Content-Digest': digest
-                }
-            )
-        except Exception as e:
-            return jsonify({
-                'errors': [{
-                    'code': 'BLOB_UNKNOWN',
-                    'message': f'Reconstruction failed: {str(e)}'
-                }]
-            }), 404
-    
-    return jsonify({
-        'errors': [{
-            'code': 'BLOB_UNKNOWN',
-            'message': 'Blob not found'
-        }]
-    }), 404
+    if not recipe_path.exists():
+        return jsonify({
+            'errors': [{'code': 'BLOB_UNKNOWN', 'message': 'Blob not found'}]
+        }), 404
+
+    try:
+        with open(recipe_path) as f:
+            recipe = json.load(f)
+        
+        def generate():
+            """Stream reconstructed layer from chunks"""
+            for chunk_hash in recipe['chunks']:
+                chunk_path = storage.blocks_dir / chunk_hash
+                if not chunk_path.exists():
+                    raise FileNotFoundError(f"Missing chunk {chunk_hash}")
+                with open(chunk_path, 'rb') as f:
+                    yield f.read()
+
+        return Response(
+            generate(),
+            mimetype='application/octet-stream',
+            headers={'Docker-Content-Digest': digest}
+        )
+    except Exception as e:
+        return jsonify({
+            'errors': [{
+                'code': 'BLOB_UNKNOWN',
+                'message': f'Reconstruction failed: {str(e)}'
+            }]
+        }), 404
+
+@app.route('/v2/<name>/blobs/<digest>', methods=['HEAD'])
+def head_blob(name, digest):
+    """Return blob metadata without content"""
+    if not digest.startswith('sha256:'):
+        return jsonify({
+            'errors': [{'code': 'DIGEST_INVALID', 'message': 'Invalid digest format'}]
+        }), 400
+
+    # Handle config blobs
+    config_path = storage.layers_dir / digest.replace('sha256:', '') / "config"
+    if config_path.exists():
+        return Response(headers={
+            'Docker-Content-Digest': digest,
+            'Content-Length': str(config_path.stat().st_size)
+        })
+
+    # Handle layer blobs
+    recipe_path = storage.layers_dir / digest.replace('sha256:', '') / "recipe.json"
+    if not recipe_path.exists():
+        return jsonify({
+            'errors': [{'code': 'BLOB_UNKNOWN', 'message': 'Blob not found'}]
+        }), 404
+
+    try:
+        with open(recipe_path) as f:
+            recipe = json.load(f)
+        
+        # Calculate total size from chunks
+        total_size = 0
+        for chunk_hash in recipe['chunks']:
+            chunk_path = storage.blocks_dir / chunk_hash
+            if not chunk_path.exists():
+                raise FileNotFoundError(f"Missing chunk {chunk_hash}")
+            total_size += chunk_path.stat().st_size
+
+        return Response(headers={
+            'Docker-Content-Digest': digest,
+            'Content-Length': str(total_size)
+        })
+    except Exception as e:
+        return jsonify({
+            'errors': [{
+                'code': 'BLOB_UNKNOWN', 
+                'message': f'Size calculation failed: {str(e)}'
+            }]
+        }), 404
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
