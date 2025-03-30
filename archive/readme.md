@@ -128,7 +128,7 @@ pip install -r requirements.txt  # Flask, hashlib, etc.
 ```
 ### 3. Run the Dedup Registry
 ```bash
-python registry_api.py  # Starts on http://localhost:5001
+python3 registry_api.py  # Starts on http://localhost:5001
 ```
 ### 4. Run a Traditional Registry (for Comparison)
 ```bash
@@ -150,6 +150,12 @@ docker push localhost:5000/nginx-v1
 docker push localhost:5000/nginx-v2
 
 # Dedup (stores unique blocks)
+docker tag nginx-v1 localhost:5001/nginx-v1
+docker tag nginx-v2 localhost:5001/nginx-v2
+docker push localhost:5001/nginx-v1
+docker push localhost:5001/nginx-v2
+
+# Thirf
 docker tag nginx-v1 localhost:5001/nginx-v1
 docker tag nginx-v2 localhost:5001/nginx-v2
 docker push localhost:5001/nginx-v1
