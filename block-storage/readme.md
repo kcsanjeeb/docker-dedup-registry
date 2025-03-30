@@ -104,6 +104,6 @@ latest: digest: sha256:b6027ddd0473be05e7d5045f7b4cc009a9ee768ed27221673010dfbb2
 
 ---
 
-## Hey
+## Comparision
 * **Traditional:** 63.2MB (shared base layers)
 * **Dedup Based:** 348MB (3× full layers + 43,897 chunks)
