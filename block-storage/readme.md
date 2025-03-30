@@ -125,3 +125,68 @@ docker-dedup-registry/
 │   └── Dockerfile        # Modified HTML
 └── requirements.txt      # Python dependencies
 ```
+
+## Comparision Example 
+
+```shell
+[root@hssl docker-dedup-registry]# mkdir data 
+[root@hssl docker-dedup-registry]# cd data 
+[root@hssl data]# mkdir blocks  
+```
+
+#### Pushing `localhost:5001/nginx-v1` image
+```bash 
+[root@hssl docker-dedup-registry]# docker tag nginx-v1 localhost:5001/nginx-v1 
+[root@hssl docker-dedup-registry]# docker push localhost:5001/nginx-v1 
+Using default tag: latest
+The push refers to repository [localhost:5001/nginx-v1]
+09be7864001e: Pushed 
+375990b2a90a: Pushed 
+latest: digest: sha256:1a4aa86d6b9a184dc0a7b622b22b57f840646735d345e156fd713f82b082f695 size: 741
+[root@hssl docker-dedup-registry]# docker inspect localhost:5001/nginx-v1 | jq '.[0].RootFS.Layers'
+[
+  "sha256:375990b2a90a8d8f332d9b9422d948f7068a3313bf5a1c9fbb91ff2d29046130",
+  "sha256:09be7864001ec2508c55fd220c34389e83541c6945b6bf802582a698bd5ed9ff"
+]
+[root@hssl docker-dedup-registry]# find data/blocks/ -type f | wc -l
+16159
+
+[root@hssl docker-dedup-registry]# du -sh data/blocks/
+65M	data/blocks/
+```
+
+#### Pushing `localhost:5001/nginx-v2` image
+```bash
+[root@hssl docker-dedup-registry]# docker tag nginx-v2 localhost:5001/nginx-v2 
+[root@hssl docker-dedup-registry]# docker push localhost:5001/nginx-v2
+Using default tag: latest
+The push refers to repository [localhost:5001/nginx-v2]
+5eec801e71a8: Pushed 
+375990b2a90a: Layer already exists 
+latest: digest: sha256:1772efe5fde950babb153ecc19df03b98e78c714663c3735abf68707d27b26b8 size: 741
+[root@hssl docker-dedup-registry]#  docker inspect localhost:5001/nginx-v2 | jq '.[0].RootFS.Layers'
+[
+  "sha256:375990b2a90a8d8f332d9b9422d948f7068a3313bf5a1c9fbb91ff2d29046130",
+  "sha256:5eec801e71a83c325c8af50b537f8c4e5d0daa02b6b74a8b97a65c3011f058b9"
+]
+[root@hssl docker-dedup-registry]# find data/blocks/ -type f | wc -l
+25002
+[root@hssl docker-dedup-registry]# du -sh data/blocks/
+100M	data/blocks/
+```
+
+#### Pulling `localhost:5001/nginx-v2` image 
+```bash 
+[root@hssl data]# docker rmi -f localhost:5001/nginx-v2 
+
+[root@hssl data]# docker pull localhost:5001/nginx-v2 
+Using default tag: latest
+latest: Pulling from nginx-v2
+Digest: sha256:1772efe5fde950babb153ecc19df03b98e78c714663c3735abf68707d27b26b8
+Status: Downloaded newer image for localhost:5001/nginx-v2:latest
+localhost:5001/nginx-v2:latest
+
+[root@hssl data]# docker images 
+REPOSITORY                TAG       IMAGE ID       CREATED         SIZE
+localhost:5001/nginx-v2   latest    604dd1dcf147   12 hours ago    157MB
+```
