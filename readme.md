@@ -2,7 +2,7 @@
 
 | Implementation | Folder | Date | Result | 
 | --- | --- | --- | --- |
-| Implementation 1 | - | 30 March, 2024 | - |
+| Implementation 1 | (Implementation 1)[https://github.com/kcsanjeeb/docker-dedup-registry/tree/master/implementation-1] | 30 March, 2024 | **Traditional:** 63.2MB (shared base layers) , **Dedup Based:** 348MB (3× full layers + 43,897 chunks) |
 
 ## 1. Overview
 This storage repository is designed to receive and store Docker container images while supporting Docker-related protocols. Its core functionalities include:
