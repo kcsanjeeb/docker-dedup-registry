@@ -61,14 +61,57 @@ class DedupStorage:
         """Generate SHA-1 hash for a data block"""
         return hashlib.sha1(data).hexdigest()
 
-    def store_block(self, data):
-        """Store a data block with deduplication"""
-        chunk_hash = self._hash_block(data)
-        if chunk_hash not in self.index:
-            block_path = self.blocks_dir / chunk_hash
-            block_path.write_bytes(data)
-            self.index[chunk_hash] = block_path
-        return chunk_hash
+    def store_blob(self, file_path, digest):
+        """Guaranteed chunk storage with verification"""
+        # Ensure blocks directory exists and is writable
+        self.blocks_dir.mkdir(parents=True, exist_ok=True)
+        if not os.access(str(self.blocks_dir), os.W_OK):
+            raise RuntimeError(f"Blocks directory not writable: {self.blocks_dir}")
+
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        
+        # Verify digest
+        computed = 'sha256:' + hashlib.sha256(content).hexdigest()
+        if computed != digest:
+            raise ValueError(f"Digest mismatch: {computed} != {digest}")
+
+        blob_id = digest.replace('sha256:', '')
+        blob_dir = self.layers_dir / blob_id
+        blob_dir.mkdir(parents=True, exist_ok=True)
+
+        # Store full content (required for Docker compatibility)
+        (blob_dir / "data").write_bytes(content)
+        
+        # Now process chunks
+        recipe = {"chunks": []}
+        for i in range(0, len(content), 4096):  # 4KB chunks
+            chunk = content[i:i+4096]
+            chunk_hash = self._hash_block(chunk)
+            recipe["chunks"].append(chunk_hash)
+            
+            # CRITICAL: Actually store each chunk
+            chunk_path = self.blocks_dir / chunk_hash
+            if not chunk_path.exists():
+                try:
+                    # Write with atomic rename to prevent corruption
+                    temp_path = chunk_path.with_suffix('.tmp')
+                    with open(temp_path, 'wb') as f:
+                        f.write(chunk)
+                    temp_path.rename(chunk_path)
+                    self.index[chunk_hash] = True
+                except Exception as e:
+                    raise RuntimeError(f"Failed to store chunk {chunk_hash}: {str(e)}")
+
+        # Save recipe
+        (blob_dir / "recipe.json").write_text(json.dumps(recipe))
+        
+        # Verify all chunks were stored
+        missing = [h for h in recipe['chunks'] if not (self.blocks_dir / h).exists()]
+        if missing:
+            raise RuntimeError(f"Missing chunks: {len(missing)}/{len(recipe['chunks'])}")
+        
+        return digest
 
     def store_layer(self, upload_path, digest):
         # Read content once
@@ -178,15 +221,41 @@ class DedupStorage:
         return digest
 
     def blob_exists(self, digest):
-        """Check if blob exists in either form"""
-        # Check full blob storage
-        blob_path = self.layers_dir / digest.replace('sha256:', '') / "data"
-        if blob_path.exists():
-            return True
-            
-        # Check if we could reconstruct from blocks
-        recipe_path = self.layers_dir / digest.replace('sha256:', '') / "recipe.json"
-        if recipe_path.exists():
-            return True
-            
-        return False
+        """Check if blob exists in any possible storage format"""
+        if not digest.startswith('sha256:'):
+            return False
+
+        blob_id = digest.replace('sha256:', '')
+        
+        # Check all possible storage locations
+        locations_to_check = [
+            self.layers_dir / blob_id / "config",        # Config blob
+            self.layers_dir / blob_id / "recipe.json",   # Recipe-based layer
+            self.layers_dir / blob_id / "data",          # Legacy full blob
+            self.blocks_dir / blob_id                    # Direct block storage
+        ]
+        
+        return any(path.exists() for path in locations_to_check)
+
+    def verify_storage(self):
+        """Check storage integrity"""
+        errors = []
+        
+        # Check blocks directory
+        if not self.blocks_dir.exists():
+            errors.append("Blocks directory missing")
+        
+        # Check sample layer
+        for layer_dir in self.layers_dir.iterdir():
+            recipe_file = layer_dir / "recipe.json"
+            if not recipe_file.exists():
+                continue
+                
+            with open(recipe_file) as f:
+                recipe = json.load(f)
+                
+            for chunk_hash in recipe['chunks']:
+                if not (self.blocks_dir / chunk_hash).exists():
+                    errors.append(f"Missing chunk {chunk_hash} for layer {layer_dir.name}")
+        
+        return not bool(errors), errors
